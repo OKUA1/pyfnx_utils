@@ -1,9 +1,9 @@
 import tarfile
 import io
-from typing import Type
+from typing import Type, Callable
 from fnnx.variants.pyfunc import PyFunc
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import inspect
 import sys
 
@@ -34,13 +34,20 @@ PYTHON_VERSION = (
 )
 
 
+@dataclass
+class PyFuncSpec:
+    filepath: str
+    class_name: str
+
+
 class PyfuncBuilder:
     def __init__(
         self,
-        pyfunc: Type[PyFunc],
+        pyfunc: Type[PyFunc] | PyFuncSpec,
         model_name: str | None = None,
         model_version: str | None = None,
         model_description: str | None = None,
+        create_meta_callback: Callable | None = None,
     ) -> None:
         self._inputs: list[NDJSON | JSON] = []
         self._outputs: list[NDJSON | JSON] = []
@@ -64,12 +71,18 @@ class PyfuncBuilder:
         self._build_dependencies = []
         self._rt_dependencies = []
 
-        if not issubclass(pyfunc, PyFunc):
-            raise TypeError("Pyfunc must be a subclass of PyFunc")
+        self.create_meta_callback = create_meta_callback
 
-        self.pyfunc_name = pyfunc.__name__
-
-        pyfunc_file = inspect.getfile(pyfunc)
+        if isinstance(pyfunc, PyFuncSpec):
+            self.pyfunc_name = pyfunc.class_name
+            pyfunc_file = pyfunc.filepath
+        elif issubclass(pyfunc, PyFunc):
+            self.pyfunc_name = pyfunc.__name__
+            pyfunc_file = inspect.getfile(pyfunc)
+        else:
+            raise TypeError(
+                "Pyfunc must be a subclass of PyFunc or an instance of PyFuncSpec"
+            )
 
         with open(pyfunc_file) as f:
             self.pyfunc_content = f.read()
@@ -164,8 +177,11 @@ class PyfuncBuilder:
             ),
         )
         f.create_file("ops.json", "[]")
-        f.create_file("meta.json", "[]")
         f.make_artifacts_folders()
+        if self.create_meta_callback:
+            self.create_meta_callback(f)
+        else:
+            f.create_file("meta.json", "[]")
 
         for module in self._extra_modules:
             f.copy(
